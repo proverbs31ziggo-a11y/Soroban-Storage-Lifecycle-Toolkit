@@ -3,6 +3,7 @@ export type ToolkitErrorCode =
   | "CONFIGURATION"
   | "NETWORK_MISMATCH"
   | "TTL_METADATA_UNAVAILABLE"
+  | "ABORTED"
   | "RPC_TRANSPORT"
   | "RPC_HTTP"
   | "RPC_ERROR"

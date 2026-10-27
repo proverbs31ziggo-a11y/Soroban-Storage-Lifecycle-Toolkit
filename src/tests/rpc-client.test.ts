@@ -379,3 +379,95 @@ test("does not echo RPC URL query credentials in transport errors", async () => 
     },
   );
 });
+
+test("does not send RPC requests when inspection is already aborted", async () => {
+  const key = xdr.LedgerKey.contractCode(
+    new xdr.LedgerKeyContractCode({ hash: Buffer.alloc(32, 14) }),
+  ).toXDR("base64");
+  const controller = new AbortController();
+  controller.abort();
+  let requests = 0;
+  const fetchStub: typeof fetch = async () => {
+    requests += 1;
+    return Response.json({});
+  };
+
+  await assert.rejects(
+    new SorobanRpcClient(config, fetchStub).inspect([key], controller.signal),
+    (error: unknown) =>
+      error instanceof ToolkitError && error.code === "ABORTED",
+  );
+  assert.equal(requests, 0);
+});
+
+test("cancels an in-flight RPC request without retrying", async () => {
+  const key = xdr.LedgerKey.contractCode(
+    new xdr.LedgerKeyContractCode({ hash: Buffer.alloc(32, 15) }),
+  ).toXDR("base64");
+  const controller = new AbortController();
+  let requests = 0;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const fetchStub: typeof fetch = async (_input, init) => {
+    requests += 1;
+    markStarted();
+    return new Promise<Response>((_resolve, reject) => {
+      const requestSignal = init?.signal;
+      if (!requestSignal) {
+        reject(new Error("RPC request did not receive an abort signal"));
+        return;
+      }
+      requestSignal.addEventListener(
+        "abort",
+        () => reject(requestSignal.reason),
+        { once: true },
+      );
+    });
+  };
+
+  const inspection = new SorobanRpcClient(config, fetchStub).inspect(
+    [key],
+    controller.signal,
+  );
+  await started;
+  controller.abort();
+  await assert.rejects(
+    inspection,
+    (error: unknown) =>
+      error instanceof ToolkitError && error.code === "ABORTED",
+  );
+  assert.equal(requests, 1);
+});
+
+test("cancels retry backoff when the caller aborts", async () => {
+  const key = xdr.LedgerKey.contractCode(
+    new xdr.LedgerKeyContractCode({ hash: Buffer.alloc(32, 16) }),
+  ).toXDR("base64");
+  const controller = new AbortController();
+  let ledgerRequests = 0;
+  const fetchStub: typeof fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as RpcRequest;
+    if (request.method === "getNetwork") {
+      return Response.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          passphrase: "Test SDF Network ; September 2015",
+          protocolVersion: 29,
+        },
+      });
+    }
+    ledgerRequests += 1;
+    setTimeout(() => controller.abort(), 10);
+    return Response.json({ error: "temporarily unavailable" }, { status: 503 });
+  };
+
+  await assert.rejects(
+    new SorobanRpcClient(config, fetchStub).inspect([key], controller.signal),
+    (error: unknown) =>
+      error instanceof ToolkitError && error.code === "ABORTED",
+  );
+  assert.equal(ledgerRequests, 1);
+});

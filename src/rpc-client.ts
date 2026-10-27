@@ -84,15 +84,29 @@ function canonicalLedgerKey(value: unknown): string {
   }
 }
 
+function abortError(signal: AbortSignal): ToolkitError {
+  return new ToolkitError(
+    "ABORTED",
+    "Soroban RPC inspection was aborted",
+    signal.reason === undefined ? undefined : { cause: signal.reason },
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw abortError(signal);
+  }
+}
+
 export class SorobanRpcClient {
   constructor(
     private readonly config: ToolkitConfig,
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  async inspect(keys: string[]): Promise<RpcSnapshot> {
+  async inspect(keys: string[], signal?: AbortSignal): Promise<RpcSnapshot> {
     try {
-      return await this.inspectUnchecked(keys);
+      return await this.inspectUnchecked(keys, signal);
     } catch (error) {
       if (error instanceof ToolkitError) {
         throw error;
@@ -103,7 +117,11 @@ export class SorobanRpcClient {
     }
   }
 
-  private async inspectUnchecked(keys: string[]): Promise<RpcSnapshot> {
+  private async inspectUnchecked(
+    keys: string[],
+    signal?: AbortSignal,
+  ): Promise<RpcSnapshot> {
+    throwIfAborted(signal);
     if (keys.length === 0) {
       throw new ToolkitError(
         "INVALID_INPUT",
@@ -140,8 +158,8 @@ export class SorobanRpcClient {
       requested.add(parsed.xdr);
     }
 
-    const networkPassphrase = await this.verifyNetwork();
-    const snapshot = await this.getLedgerEntries([...requested]);
+    const networkPassphrase = await this.verifyNetwork(signal);
+    const snapshot = await this.getLedgerEntries([...requested], signal);
     for (const returnedKey of snapshot.entries.keys()) {
       if (!requested.has(returnedKey)) {
         throw new ToolkitError(
@@ -178,8 +196,8 @@ export class SorobanRpcClient {
     return { networkPassphrase, latestLedger: snapshot.latestLedger, entries };
   }
 
-  private async verifyNetwork(): Promise<string> {
-    const result = await this.callRpc("getNetwork", {});
+  private async verifyNetwork(signal?: AbortSignal): Promise<string> {
+    const result = await this.callRpc("getNetwork", {}, signal);
     if (
       !isObject(result) ||
       typeof result.passphrase !== "string" ||
@@ -206,11 +224,18 @@ export class SorobanRpcClient {
     return result.passphrase;
   }
 
-  private async getLedgerEntries(keys: string[]): Promise<RpcLedgerSnapshot> {
-    const result = await this.callRpc("getLedgerEntries", {
-      keys,
-      xdrFormat: "base64",
-    });
+  private async getLedgerEntries(
+    keys: string[],
+    signal?: AbortSignal,
+  ): Promise<RpcLedgerSnapshot> {
+    const result = await this.callRpc(
+      "getLedgerEntries",
+      {
+        keys,
+        xdrFormat: "base64",
+      },
+      signal,
+    );
     if (
       !isObject(result) ||
       !Number.isSafeInteger(result.latestLedger) ||
@@ -255,8 +280,13 @@ export class SorobanRpcClient {
     return { latestLedger, entries };
   }
 
-  private async callRpc(method: string, params: unknown): Promise<unknown> {
+  private async callRpc(
+    method: string,
+    params: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     for (let attempt = 0; attempt < MAX_RPC_ATTEMPTS; attempt += 1) {
+      throwIfAborted(signal);
       let response: Response;
       try {
         response = await this.fetchImpl(this.config.rpcUrl, {
@@ -268,12 +298,17 @@ export class SorobanRpcClient {
               : {}),
           },
           body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+            : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
           redirect: "error",
         });
       } catch (error) {
+        if (signal?.aborted) {
+          throw abortError(signal);
+        }
         if (attempt + 1 < MAX_RPC_ATTEMPTS) {
-          await this.delay(RETRY_DELAYS_MS[attempt]!);
+          await this.delay(RETRY_DELAYS_MS[attempt]!, signal);
           continue;
         }
         throw new ToolkitError(
@@ -282,13 +317,14 @@ export class SorobanRpcClient {
           { cause: error },
         );
       }
+      throwIfAborted(signal);
       if (!response.ok) {
         if (
           [429, 500, 502, 503, 504].includes(response.status) &&
           attempt + 1 < MAX_RPC_ATTEMPTS
         ) {
           await response.body?.cancel();
-          await this.delay(this.retryDelay(response, attempt));
+          await this.delay(this.retryDelay(response, attempt), signal);
           continue;
         }
         throw new ToolkitError(
@@ -296,7 +332,7 @@ export class SorobanRpcClient {
           `Soroban RPC returned HTTP ${response.status}`,
         );
       }
-      return this.parseResponse(response);
+      return this.parseResponse(response, signal);
     }
     throw new ToolkitError(
       "RPC_TRANSPORT",
@@ -318,11 +354,35 @@ export class SorobanRpcClient {
     return RETRY_DELAYS_MS[attempt]!;
   }
 
-  private delay(milliseconds: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  private delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      return new Promise((resolve) => setTimeout(resolve, milliseconds));
+    }
+    if (signal.aborted) {
+      return Promise.reject(abortError(signal));
+    }
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, milliseconds);
+      const onAbort = () => {
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", onAbort);
+        reject(abortError(signal));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+      }
+    });
   }
 
-  private async parseResponse(response: Response): Promise<unknown> {
+  private async parseResponse(
+    response: Response,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    throwIfAborted(signal);
     const contentLength = response.headers.get("content-length");
     if (
       contentLength &&
@@ -355,8 +415,12 @@ export class SorobanRpcClient {
         }
         chunks.push(value);
       }
+      throwIfAborted(signal);
       responseText = Buffer.concat(chunks).toString("utf8");
     } catch (error) {
+      if (signal?.aborted) {
+        throw abortError(signal);
+      }
       if (error instanceof Error && error.message.includes("safety limit")) {
         throw error;
       }
