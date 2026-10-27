@@ -40,7 +40,7 @@
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^17.4.0",
-    "commander": "^14.0.0"
+    "commander": "^15.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
