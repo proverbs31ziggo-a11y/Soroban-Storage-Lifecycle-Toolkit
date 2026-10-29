@@ -151,11 +151,15 @@ npm run typecheck
 npm test
 ```
 
-The Testnet integration test queries the built-in native asset contract's known instance key. You can override it with `STORAGE_LEDGER_KEY_XDR` and change the endpoint with `STELLAR_RPC_URL`:
+`npm test` is fully offline: it includes deterministic tests against a local RPC stand-in on `127.0.0.1` that cover contract-data and contract-code keys, missing keys, and providers that omit expiration metadata.
+
+Read-only checks against Stellar Testnet are separate:
 
 ```sh
 npm run test:integration
 ```
+
+By default they inspect the native asset contract's instance key and keys that cannot exist. A live contract-code check runs only when you supply a WASM hash, because Testnet resets remove uploaded WASM. See [Integration tests](CONTRIBUTING.md#integration-tests) for all overrides.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
 

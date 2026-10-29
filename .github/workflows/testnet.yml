@@ -2,6 +2,11 @@ name: Testnet integration
 
 on:
   workflow_dispatch:
+    inputs:
+      contract_code_wasm_hash:
+        description: "Optional WASM hash (hex) for the live contract-code test; defaults to the STORAGE_CONTRACT_CODE_WASM_HASH repository variable"
+        required: false
+        type: string
   schedule:
     - cron: "23 8 * * 1"
 
@@ -19,3 +24,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:integration
+        env:
+          STORAGE_CONTRACT_DATA_KEY_XDR: ${{ vars.STORAGE_CONTRACT_DATA_KEY_XDR }}
+          STORAGE_CONTRACT_CODE_WASM_HASH: ${{ inputs.contract_code_wasm_hash || vars.STORAGE_CONTRACT_CODE_WASM_HASH }}
+          STELLAR_RPC_URL: ${{ vars.STELLAR_RPC_URL }}

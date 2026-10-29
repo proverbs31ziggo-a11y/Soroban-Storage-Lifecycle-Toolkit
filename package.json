@@ -32,7 +32,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:package": "node scripts/package-smoke.mjs",
-    "test": "npm run build && node --test dist/tests/config.test.js dist/tests/ledger-key.test.js dist/tests/manifest.test.js dist/tests/maintenance-planner.test.js dist/tests/rpc-client.test.js dist/tests/cli.test.js",
+    "test": "npm run build && node --test dist/tests/config.test.js dist/tests/ledger-key.test.js dist/tests/manifest.test.js dist/tests/maintenance-planner.test.js dist/tests/rpc-client.test.js dist/tests/local-rpc.test.js dist/tests/cli.test.js",
     "test:integration": "npm run build && node --test dist/tests/integration.test.js"
   },
   "engines": {
