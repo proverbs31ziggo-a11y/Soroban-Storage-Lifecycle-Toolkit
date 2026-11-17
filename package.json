@@ -45,7 +45,7 @@
   "devDependencies": {
     "@types/node": "^22.15.0",
     "ajv": "^8.20.0",
-    "prettier": "^3.9.10",
+    "prettier": "^3.10.1",
     "typescript": "^5.8.3"
   }
 }
